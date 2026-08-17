@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Dither Lab</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --panel: #17171b;
+    --panel-2: #1f1f25;
+    --border: #2a2a32;
+    --text: #e8e8ea;
+    --muted: #8a8a95;
+    --accent: #7cf;
+    --accent-2: #f7a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .app {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    height: 100vh;
+  }
+  aside {
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+    padding: 16px;
+  }
+  main {
+    position: relative;
+    overflow: hidden;
+    background:
+      linear-gradient(45deg, #111 25%, transparent 25%),
+      linear-gradient(-45deg, #111 25%, transparent 25%),
+      linear-gradient(45deg, transparent 75%, #111 75%),
+      linear-gradient(-45deg, transparent 75%, #111 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+    background-color: #0a0a0c;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #stage {
+    position: absolute;
+    inset: 0;
+  }
+  #viewport {
+    position: absolute;
+    left: 0; top: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+    cursor: grab;
+  }
+  #emptyState {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #viewport.panning { cursor: grabbing; }
+  #zoomHud {
+    position: absolute;
+    bottom: 12px; right: 12px;
+    display: flex; gap: 6px; align-items: center;
+    background: rgba(23,23,27,.9);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px;
+    backdrop-filter: blur(6px);
+    font-variant-numeric: tabular-nums;
+  }
+  #zoomHud button {
+    width: 28px; height: 28px; padding: 0; font-size: 14px;
+  }
+  #zoomHud .readout {
+    min-width: 52px; text-align: center; font-size: 12px; color: var(--muted);
+  }
+  h1 { font-size: 14px; margin: 0 0 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+  h2 { font-size: 11px; margin: 16px 0 8px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+  .group { padding: 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px; }
+  label { display: block; margin-bottom: 10px; }
+  .row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 4px; }
+  .row .val { color: var(--accent); font-variant-numeric: tabular-nums; }
+  input.val {
+    width: 56px; padding: 2px 6px;
+    background: #101013; color: var(--accent);
+    border: 1px solid transparent; border-radius: 4px;
+    font: inherit; font-variant-numeric: tabular-nums;
+    text-align: right;
+    transition: border-color .15s, background .15s;
+  }
+  input.val:hover { border-color: var(--border); }
+  input.val:focus {
+    outline: none;
+    border-color: var(--accent);
+    background: #181820;
+  }
+  input.val::-webkit-inner-spin-button,
+  input.val::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  select, input[type="color"], input[type="number"], button {
+    width: 100%; padding: 6px 8px; background: #101013; color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; font: inherit;
+  }
+  input[type="color"] { height: 32px; padding: 2px; cursor: pointer; }
+  button { cursor: pointer; transition: background .15s, border-color .15s; }
+  button:hover { background: #1a1a20; border-color: #3a3a45; }
+  button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { background: #5cd; }
+  .palette { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .palette input[type="color"] { width: 34px; height: 34px; flex: 0 0 auto; }
+  .palette button.mini { width: 34px; height: 34px; padding: 0; flex: 0 0 auto; }
+  .checkbox { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  .checkbox input { width: auto; accent-color: var(--accent); }
+  canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  .empty { color: var(--muted); text-align: center; padding: 40px; border: 2px dashed var(--border); border-radius: 10px; }
+  .file-input { position: relative; overflow: hidden; }
+  .file-input input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .tabs {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 4px; margin-bottom: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px;
+  }
+  .tabs button {
+    background: transparent; border: none; padding: 8px 10px;
+    font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--muted); border-radius: 6px;
+  }
+  .tabs button.active {
+    background: var(--accent); color: #000; font-weight: 600;
+  }
+  .tabs button:not(.active):hover { background: #2a2a32; color: var(--text); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .effect-card {
+    padding: 12px; background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 8px; margin-bottom: 12px;
+  }
+  .effect-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .effect-head h2 { margin: 0; }
+  .effect-body { opacity: .45; pointer-events: none; transition: opacity .15s; }
+  .effect-body.enabled { opacity: 1; pointer-events: auto; }
+  .switch {
+    position: relative; width: 34px; height: 20px;
+    background: #2a2a32; border-radius: 10px; cursor: pointer;
+    transition: background .15s;
+  }
+  .switch input { position: absolute; opacity: 0; pointer-events: none; }
+  .switch .knob {
+    position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #888; transition: left .15s, background .15s;
+  }
+  .switch.on { background: var(--accent); }
+  .switch.on .knob { left: 16px; background: #000; }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>Dither Lab</h1>
+
+    <div class="group">
+      <div class="btn-row">
+        <button class="file-input primary">
+          Load Image
+          <input type="file" id="file" accept="image/*" />
+        </button>
+        <button id="download">Download PNG</button>
+      </div>
+      <div class="hint" id="imgInfo">No image loaded</div>
+    </div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn active" data-tab="dither">Dither</button>
+      <button class="tab-btn" data-tab="effects">Effects</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-dither">
+
+    <div class="group">
+      <h2>Algorithm</h2>
+      <label>
+        <select id="algo">
+          <option value="floyd">Floyd–Steinberg</option>
+          <option value="atkinson">Atkinson</option>
+          <option value="jjn">Jarvis–Judice–Ninke</option>
+          <option value="stucki">Stucki</option>
+          <option value="burkes">Burkes</option>
+          <option value="sierra">Sierra</option>
+          <option value="bayer2">Bayer 2×2</option>
+          <option value="bayer4">Bayer 4×4</option>
+          <option value="bayer8" selected>Bayer 8×8</option>
+          <option value="random">Random (white noise)</option>
+          <option value="threshold">Threshold</option>
+          <option value="none">None (just quantize)</option>
+        </select>
+      </label>
+    </div>
+
+    <div class="group">
+      <h2>Image</h2>
+      <label>
+        <div class="row"><span>Brightness</span><input class="val" id="brightnessV" inputmode="numeric" value="0" /></div>
+        <input type="range" id="brightness" min="-100" max="100" value="0" />
+      </label>
+      <label>
+        <div class="row"><span>Contrast</span><input class="val" id="contrastV" inputmode="numeric" value="0" /></div>
+        <input type="range" id="contrast" min="-100" max="100" value="0" />
+      </label>
+      <label>
+        <div class="row"><span>Gamma</span><input class="val" id="gammaV" inputmode="decimal" value="1.00" /></div>
+        <input type="range" id="gamma" min="10" max="300" value="100" />
+      </label>
+      <label>
+        <div class="row"><span>Saturation</span><input class="val" id="satV" inputmode="numeric" value="100" /></div>
+        <input type="range" id="sat" min="0" max="200" value="100" />
+      </label>
+    </div>
+
+    <div class="group">
+      <h2>Dither</h2>
+      <label>
+        <div class="row"><span>Threshold</span><input class="val" id="thresholdV" inputmode="numeric" value="128" /></div>
+        <input type="range" id="threshold" min="0" max="255" value="128" />
+        <div class="hint">Used by threshold / ordered / random</div>
+      </label>
+      <label>
+        <div class="row"><span>Diffusion strength</span><input class="val" id="strengthV" inputmode="decimal" value="1.00" /></div>
+        <input type="range" id="strength" min="0" max="150" value="100" />
+      </label>
+      <label>
+        <div class="row"><span>Serpentine scan</span></div>
+        <label class="checkbox"><input type="checkbox" id="serpentine" checked /> on</label>
+      </label>
+    </div>
+
+    <div class="group">
+      <h2>Pixelation</h2>
+      <label>
+        <div class="row"><span>Pixel size</span><input class="val" id="pxV" inputmode="numeric" value="1" /></div>
+        <input type="range" id="px" min="1" max="20" value="1" />
+        <div class="hint">Downscale before dithering</div>
+      </label>
+    </div>
+
+    <div class="group">
+      <h2>Color</h2>
+      <label>
+        <div class="row"><span>Mode</span></div>
+        <select id="colorMode">
+          <option value="mono" selected>Monochrome (2 colors)</option>
+          <option value="gray">Grayscale (N levels)</option>
+          <option value="rgb">RGB (N levels per channel)</option>
+          <option value="palette">Custom palette</option>
+        </select>
+      </label>
+      <label>
+        <div class="row"><span>Levels</span><input class="val" id="levelsV" inputmode="numeric" value="2" /></div>
+        <input type="range" id="levels" min="2" max="16" value="2" />
+        <div class="hint">For grayscale / RGB modes</div>
+      </label>
+
+      <div id="monoColors">
+        <label>
+          <div class="row"><span>Dark color</span></div>
+          <input type="color" id="c0" value="#000000" />
+        </label>
+        <label>
+          <div class="row"><span>Light color</span></div>
+          <input type="color" id="c1" value="#ffffff" />
+        </label>
+      </div>
+
+      <div id="paletteEditor" style="display:none">
+        <div class="row"><span>Palette</span></div>
+        <div class="palette" id="palette"></div>
+        <div class="btn-row" style="margin-top:8px">
+          <button id="addColor">+ Add</button>
+          <button id="removeColor">– Remove</button>
+        </div>
+      </div>
+
+      <label style="margin-top:8px">
+        <div class="checkbox"><input type="checkbox" id="invert" /> Invert</div>
+      </label>
+    </div>
+
+    </div><!-- /#tab-dither -->
+
+    <div class="tab-panel" id="tab-effects">
+      <div class="effect-card">
+        <div class="effect-head">
+          <h2>Center Dot</h2>
+          <div class="switch" id="fx_dot_switch"><input type="checkbox" id="fx_dot" /><div class="knob"></div></div>
+        </div>
+        <div class="effect-body" id="fx_dot_body">
+          <label>
+            <div class="row"><span>Cell size</span><input class="val" id="fx_dot_cellV" inputmode="numeric" value="10" /></div>
+            <input type="range" id="fx_dot_cell" min="2" max="40" value="10" />
+            <div class="hint">Size of each cell in output pixels</div>
+          </label>
+          <label>
+            <div class="row"><span>Dot size</span><input class="val" id="fx_dot_sizeV" inputmode="numeric" value="35%" /></div>
+            <input type="range" id="fx_dot_size" min="0" max="100" value="35" />
+            <div class="hint">Dot diameter as % of cell</div>
+          </label>
+          <label>
+            <div class="row"><span>Shape</span></div>
+            <select id="fx_dot_shape">
+              <option value="circle" selected>Circle</option>
+              <option value="square">Square</option>
+              <option value="diamond">Diamond</option>
+              <option value="plus">Plus</option>
+              <option value="ring">Ring</option>
+            </select>
+          </label>
+          <label>
+            <div class="row"><span>Dot color</span></div>
+            <select id="fx_dot_colorMode">
+              <option value="invert" selected>Auto-invert cell color</option>
+              <option value="fixed">Fixed color</option>
+              <option value="palette_lum">Palette — by brightness</option>
+              <option value="palette_random">Palette — random</option>
+              <option value="palette_nearest">Palette — nearest to cell</option>
+            </select>
+          </label>
+          <label id="fx_dot_colorLabel" style="display:none">
+            <div class="row"><span>Fixed color</span></div>
+            <input type="color" id="fx_dot_color" value="#000000" />
+          </label>
+          <div id="fx_dot_paletteEditor" style="display:none">
+            <div class="row"><span>Dot palette</span></div>
+            <div class="palette" id="fx_dot_palette"></div>
+            <div class="btn-row" style="margin-top:8px">
+              <button id="fx_dot_addColor">+ Add</button>
+              <button id="fx_dot_removeColor">– Remove</button>
+            </div>
+            <div class="btn-row" style="margin-top:6px">
+              <button id="fx_dot_usePalette">Use main palette</button>
+              <button id="fx_dot_presetRainbow">Rainbow</button>
+            </div>
+            <div class="hint">Brightness mode maps dark→first, bright→last color</div>
+          </div>
+          <label>
+            <div class="checkbox"><input type="checkbox" id="fx_dot_bgCell" /> Draw solid cell background</div>
+            <div class="hint">Off = only the dots render (leaves background transparent)</div>
+          </label>
+          <label>
+            <div class="row"><span>Background color</span></div>
+            <select id="fx_dot_bgMode">
+              <option value="source" selected>Source image cell</option>
+              <option value="fixed">Fixed color</option>
+              <option value="palette_lum">Palette — by brightness</option>
+              <option value="palette_random">Palette — random</option>
+              <option value="palette_nearest">Palette — nearest to cell</option>
+            </select>
+          </label>
+          <label id="fx_dot_bgColorLabel" style="display:none">
+            <div class="row"><span>Fixed background</span></div>
+            <input type="color" id="fx_dot_bgColor" value="#ffffff" />
+          </label>
+          <div id="fx_dot_bgPaletteEditor" style="display:none">
+            <div class="row"><span>Background palette</span></div>
+            <div class="palette" id="fx_dot_bgPalette"></div>
+            <div class="btn-row" style="margin-top:8px">
+              <button id="fx_dot_bgAddColor">+ Add</button>
+              <button id="fx_dot_bgRemoveColor">– Remove</button>
+            </div>
+            <div class="btn-row" style="margin-top:6px">
+              <button id="fx_dot_bgUsePalette">Use main palette</button>
+              <button id="fx_dot_bgUseDotPalette">Use dot palette</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hint" style="padding:0 4px">More effects coming — this is just the start.</div>
+    </div><!-- /#tab-effects -->
+
+    <div class="group">
+      <div class="btn-row">
+        <button id="reset">Reset settings</button>
+        <button id="swap">Swap colors</button>
+      </div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="stage">
+      <div id="viewport"></div>
+      <div id="emptyState"><div class="empty">Load an image to begin.</div></div>
+    </div>
+    <div id="zoomHud">
+      <button id="zoomOut" title="Zoom out">−</button>
+      <div class="readout" id="zoomReadout">100%</div>
+      <button id="zoomIn" title="Zoom in">+</button>
+      <button id="zoomFit" title="Fit to view">⤢</button>
+    </div>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+const state = {
+  img: null,
+  palette: ["#1a1c2c", "#5d275d", "#b13e53", "#ef7d57", "#ffcd75", "#a7f070", "#38b764", "#257179"],
+  selectedSwatch: 0,
+  renderTimer: null,
+};
+
+// ---------- UI wiring ----------
+
+// Each binding: [sliderId, displayId, fmt(sliderVal -> displayStr), parse(displayStr -> sliderVal)]
+const idn = (s) => parseFloat(String(s).replace(/[^\d.\-]/g, ""));
+const rangeBindings = [
+  ["brightness", "brightnessV", v => v,                     s => idn(s)],
+  ["contrast",   "contrastV",   v => v,                     s => idn(s)],
+  ["gamma",      "gammaV",      v => (v / 100).toFixed(2),  s => Math.round(idn(s) * 100)],
+  ["sat",        "satV",        v => v,                     s => idn(s)],
+  ["threshold",  "thresholdV",  v => v,                     s => idn(s)],
+  ["strength",   "strengthV",   v => (v / 100).toFixed(2),  s => Math.round(idn(s) * 100)],
+  ["px",         "pxV",         v => v,                     s => idn(s)],
+  ["levels",     "levelsV",     v => v,                     s => idn(s)],
+];
+
+for (const binding of rangeBindings) bindRangeAndReadout(...binding);
+
+function bindRangeAndReadout(sliderId, readoutId, fmt, parse) {
+  const slider = $(sliderId);
+  const readout = $(readoutId);
+
+  // slider → readout
+  const fromSlider = () => { if (document.activeElement !== readout) readout.value = fmt(slider.value); scheduleRender(); };
+  slider.addEventListener("input", fromSlider);
+
+  // readout → slider
+  const commit = () => {
+    const parsed = parse(readout.value);
+    if (Number.isNaN(parsed)) { readout.value = fmt(slider.value); return; }
+    const min = +slider.min, max = +slider.max;
+    const clamped = Math.max(min, Math.min(max, parsed));
+    slider.value = clamped;
+    readout.value = fmt(slider.value);
+    scheduleRender();
+  };
+  readout.addEventListener("change", commit);
+  readout.addEventListener("blur", commit);
+  readout.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); readout.blur(); }
+    else if (e.key === "Escape") { readout.value = fmt(slider.value); readout.blur(); }
+    else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+      e.preventDefault();
+      const step = (e.shiftKey ? 10 : 1) * (+slider.step || 1) * (e.key === "ArrowUp" ? 1 : -1);
+      // step in display units for decimal-mapped fields; otherwise raw slider step
+      const isDecimal = fmt(0).includes(".");
+      if (isDecimal) {
+        const cur = parseFloat(readout.value) || 0;
+        const next = cur + (e.shiftKey ? 0.1 : 0.01) * (e.key === "ArrowUp" ? 1 : -1);
+        readout.value = next.toFixed(2);
+      } else {
+        const cur = parseFloat(readout.value) || 0;
+        readout.value = String(cur + step);
+      }
+      commit();
+    }
+  });
+  readout.addEventListener("focus", () => readout.select());
+
+  // initial sync
+  readout.value = fmt(slider.value);
+}
+
+for (const id of ["algo", "colorMode", "c0", "c1", "serpentine", "invert"]) {
+  $(id).addEventListener("input", scheduleRender);
+  $(id).addEventListener("change", scheduleRender);
+}
+
+// --- Tabs ---
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    $("tab-" + btn.dataset.tab).classList.add("active");
+  });
+});
+
+// --- Center Dot effect controls ---
+const fxDotRanges = [
+  ["fx_dot_cell", "fx_dot_cellV", v => v,        s => idn(s)],
+  ["fx_dot_size", "fx_dot_sizeV", v => v + "%",  s => idn(s)],
+];
+for (const binding of fxDotRanges) bindRangeAndReadout(...binding);
+for (const id of ["fx_dot_shape", "fx_dot_color", "fx_dot_colorMode", "fx_dot_bgCell", "fx_dot_bgMode", "fx_dot_bgColor"]) {
+  $(id).addEventListener("input", scheduleRender);
+  $(id).addEventListener("change", scheduleRender);
+}
+function syncDotColorModeUI() {
+  const m = $("fx_dot_colorMode").value;
+  $("fx_dot_colorLabel").style.display = m === "fixed" ? "" : "none";
+  $("fx_dot_paletteEditor").style.display = m.startsWith("palette") ? "" : "none";
+}
+$("fx_dot_colorMode").addEventListener("change", syncDotColorModeUI);
+syncDotColorModeUI();
+
+function syncDotBgModeUI() {
+  const m = $("fx_dot_bgMode").value;
+  $("fx_dot_bgColorLabel").style.display = m === "fixed" ? "" : "none";
+  $("fx_dot_bgPaletteEditor").style.display = m.startsWith("palette") ? "" : "none";
+}
+$("fx_dot_bgMode").addEventListener("change", syncDotBgModeUI);
+syncDotBgModeUI();
+
+// Dot palette state + editor
+state.dotPalette = ["#ff006e", "#fb5607", "#ffbe0b", "#8338ec", "#3a86ff"];
+state.dotSwatch = 0;
+
+function renderDotPalette() {
+  const root = $("fx_dot_palette");
+  root.innerHTML = "";
+  state.dotPalette.forEach((c, i) => {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = c;
+    input.title = `Color ${i + 1}`;
+    input.style.outline = i === state.dotSwatch ? "2px solid var(--accent)" : "";
+    input.addEventListener("click", () => { state.dotSwatch = i; renderDotPalette(); });
+    input.addEventListener("input", (e) => { state.dotPalette[i] = e.target.value; scheduleRender(); });
+    root.appendChild(input);
+  });
+}
+$("fx_dot_addColor").addEventListener("click", () => {
+  if (state.dotPalette.length >= 32) return;
+  state.dotPalette.push("#888888");
+  state.dotSwatch = state.dotPalette.length - 1;
+  renderDotPalette(); scheduleRender();
+});
+$("fx_dot_removeColor").addEventListener("click", () => {
+  if (state.dotPalette.length <= 1) return;
+  state.dotPalette.splice(state.dotSwatch, 1);
+  state.dotSwatch = Math.max(0, state.dotSwatch - 1);
+  renderDotPalette(); scheduleRender();
+});
+$("fx_dot_usePalette").addEventListener("click", () => {
+  state.dotPalette = [...state.palette];
+  state.dotSwatch = 0;
+  renderDotPalette(); scheduleRender();
+});
+$("fx_dot_presetRainbow").addEventListener("click", () => {
+  state.dotPalette = ["#ff004d", "#ff8500", "#ffec27", "#00e436", "#29adff", "#83769c", "#ff77a8"];
+  state.dotSwatch = 0;
+  renderDotPalette(); scheduleRender();
+});
+renderDotPalette();
+
+// Background palette state + editor
+state.dotBgPalette = ["#ffffff", "#e0e0e0", "#a0a0a0", "#404040", "#000000"];
+state.dotBgSwatch = 0;
+
+function renderDotBgPalette() {
+  const root = $("fx_dot_bgPalette");
+  root.innerHTML = "";
+  state.dotBgPalette.forEach((c, i) => {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = c;
+    input.title = `Color ${i + 1}`;
+    input.style.outline = i === state.dotBgSwatch ? "2px solid var(--accent)" : "";
+    input.addEventListener("click", () => { state.dotBgSwatch = i; renderDotBgPalette(); });
+    input.addEventListener("input", (e) => { state.dotBgPalette[i] = e.target.value; scheduleRender(); });
+    root.appendChild(input);
+  });
+}
+$("fx_dot_bgAddColor").addEventListener("click", () => {
+  if (state.dotBgPalette.length >= 32) return;
+  state.dotBgPalette.push("#888888");
+  state.dotBgSwatch = state.dotBgPalette.length - 1;
+  renderDotBgPalette(); scheduleRender();
+});
+$("fx_dot_bgRemoveColor").addEventListener("click", () => {
+  if (state.dotBgPalette.length <= 1) return;
+  state.dotBgPalette.splice(state.dotBgSwatch, 1);
+  state.dotBgSwatch = Math.max(0, state.dotBgSwatch - 1);
+  renderDotBgPalette(); scheduleRender();
+});
+$("fx_dot_bgUsePalette").addEventListener("click", () => {
+  state.dotBgPalette = [...state.palette];
+  state.dotBgSwatch = 0;
+  renderDotBgPalette(); scheduleRender();
+});
+$("fx_dot_bgUseDotPalette").addEventListener("click", () => {
+  state.dotBgPalette = [...state.dotPalette];
+  state.dotBgSwatch = 0;
+  renderDotBgPalette(); scheduleRender();
+});
+renderDotBgPalette();
+// Custom switch toggle
+(function setupSwitch(wrap, body) {
+  const checkbox = wrap.querySelector("input");
+  const sync = () => {
+    wrap.classList.toggle("on", checkbox.checked);
+    body.classList.toggle("enabled", checkbox.checked);
+    scheduleRender();
+  };
+  wrap.addEventListener("click", (e) => {
+    if (e.target.tagName !== "INPUT") checkbox.checked = !checkbox.checked;
+    sync();
+  });
+  sync();
+})($("fx_dot_switch"), $("fx_dot_body"));
+
+$("colorMode").addEventListener("change", () => {
+  const m = $("colorMode").value;
+  $("monoColors").style.display = m === "mono" ? "" : "none";
+  $("paletteEditor").style.display = m === "palette" ? "" : "none";
+});
+
+$("file").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      state.img = img;
+      state.needsFit = true;
+      $("imgInfo").textContent = `${img.naturalWidth} × ${img.naturalHeight}`;
+      render();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+});
+
+$("download").addEventListener("click", () => {
+  const canvas = document.querySelector("main canvas");
+  if (!canvas) return;
+  const a = document.createElement("a");
+  a.href = canvas.toDataURL("image/png");
+  a.download = "dithered.png";
+  a.click();
+});
+
+$("reset").addEventListener("click", () => {
+  const defaults = {
+    brightness: 0, contrast: 0, gamma: 100, sat: 100,
+    threshold: 128, strength: 100, px: 1, levels: 2,
+  };
+  for (const k in defaults) $(k).value = defaults[k];
+  $("serpentine").checked = true;
+  $("invert").checked = false;
+  rangeBindings.forEach(([id, lbl, fmt]) => { $(lbl).value = fmt($(id).value); });
+  render();
+});
+
+$("swap").addEventListener("click", () => {
+  const a = $("c0").value, b = $("c1").value;
+  $("c0").value = b; $("c1").value = a;
+  render();
+});
+
+// Palette editor
+function renderPalette() {
+  const root = $("palette");
+  root.innerHTML = "";
+  state.palette.forEach((c, i) => {
+    const input = document.createElement("input");
+    input.type = "color";
+    input.value = c;
+    input.title = `Color ${i + 1}`;
+    input.style.outline = i === state.selectedSwatch ? "2px solid var(--accent)" : "";
+    input.addEventListener("click", () => { state.selectedSwatch = i; renderPalette(); });
+    input.addEventListener("input", (e) => { state.palette[i] = e.target.value; scheduleRender(); });
+    root.appendChild(input);
+  });
+}
+$("addColor").addEventListener("click", () => {
+  if (state.palette.length >= 32) return;
+  state.palette.push("#888888");
+  state.selectedSwatch = state.palette.length - 1;
+  renderPalette(); scheduleRender();
+});
+$("removeColor").addEventListener("click", () => {
+  if (state.palette.length <= 2) return;
+  state.palette.splice(state.selectedSwatch, 1);
+  state.selectedSwatch = Math.max(0, state.selectedSwatch - 1);
+  renderPalette(); scheduleRender();
+});
+renderPalette();
+
+function scheduleRender() {
+  clearTimeout(state.renderTimer);
+  state.renderTimer = setTimeout(render, 10);
+}
+
+// ---------- Color helpers ----------
+
+function hexToRgb(h) {
+  const n = parseInt(h.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function applyAdjustments(data, brightness, contrast, gamma, sat) {
+  // brightness: -100..100 → add
+  // contrast: -100..100 → scale around 128
+  // gamma: 0.1..3
+  // sat: 0..2
+  const b = brightness * 2.55;
+  const cFactor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+  const invG = 1 / gamma;
+  for (let i = 0; i < data.length; i += 4) {
+    let r = data[i], g = data[i + 1], bl = data[i + 2];
+    // brightness + contrast
+    r = cFactor * (r - 128) + 128 + b;
+    g = cFactor * (g - 128) + 128 + b;
+    bl = cFactor * (bl - 128) + 128 + b;
+    // saturation (around luminance)
+    const y = 0.299 * r + 0.587 * g + 0.114 * bl;
+    r = y + (r - y) * sat;
+    g = y + (g - y) * sat;
+    bl = y + (bl - y) * sat;
+    // gamma (on 0..1)
+    r = 255 * Math.pow(Math.max(0, Math.min(1, r / 255)), invG);
+    g = 255 * Math.pow(Math.max(0, Math.min(1, g / 255)), invG);
+    bl = 255 * Math.pow(Math.max(0, Math.min(1, bl / 255)), invG);
+    data[i] = clamp8(r);
+    data[i + 1] = clamp8(g);
+    data[i + 2] = clamp8(bl);
+  }
+}
+
+function clamp8(v) { return v < 0 ? 0 : v > 255 ? 255 : v | 0; }
+
+function invertData(data) {
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = 255 - data[i];
+    data[i + 1] = 255 - data[i + 1];
+    data[i + 2] = 255 - data[i + 2];
+  }
+}
+
+// ---------- Quantizers ----------
+
+function findClosest(palette, r, g, b) {
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < palette.length; i++) {
+    const p = palette[i];
+    const dr = r - p[0], dg = g - p[1], db = b - p[2];
+    const d = dr * dr + dg * dg + db * db;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return palette[best];
+}
+
+function makeQuantizer(mode, levels, c0, c1, palette) {
+  if (mode === "mono") {
+    const a = hexToRgb(c0), b = hexToRgb(c1);
+    // project onto grayscale, threshold not used here (caller handles via bias)
+    return (r, g, bl, bias) => {
+      const y = 0.299 * r + 0.587 * g + 0.114 * bl + (bias || 0);
+      return y < 128 ? a : b;
+    };
+  }
+  if (mode === "gray") {
+    const step = 255 / (levels - 1);
+    return (r, g, bl) => {
+      const y = 0.299 * r + 0.587 * g + 0.114 * bl;
+      const q = Math.round(y / step) * step;
+      const c = clamp8(q);
+      return [c, c, c];
+    };
+  }
+  if (mode === "rgb") {
+    const step = 255 / (levels - 1);
+    return (r, g, bl) => [
+      clamp8(Math.round(r / step) * step),
+      clamp8(Math.round(g / step) * step),
+      clamp8(Math.round(bl / step) * step),
+    ];
+  }
+  // palette
+  const pal = palette.map(hexToRgb);
+  return (r, g, bl) => findClosest(pal, r, g, bl);
+}
+
+// ---------- Error diffusion kernels ----------
+
+const KERNELS = {
+  floyd: { div: 16, offs: [
+    [1, 0, 7], [-1, 1, 3], [0, 1, 5], [1, 1, 1],
+  ]},
+  atkinson: { div: 8, offs: [
+    [1, 0, 1], [2, 0, 1], [-1, 1, 1], [0, 1, 1], [1, 1, 1], [0, 2, 1],
+  ]},
+  jjn: { div: 48, offs: [
+    [1, 0, 7], [2, 0, 5],
+    [-2, 1, 3], [-1, 1, 5], [0, 1, 7], [1, 1, 5], [2, 1, 3],
+    [-2, 2, 1], [-1, 2, 3], [0, 2, 5], [1, 2, 3], [2, 2, 1],
+  ]},
+  stucki: { div: 42, offs: [
+    [1, 0, 8], [2, 0, 4],
+    [-2, 1, 2], [-1, 1, 4], [0, 1, 8], [1, 1, 4], [2, 1, 2],
+    [-2, 2, 1], [-1, 2, 2], [0, 2, 4], [1, 2, 2], [2, 2, 1],
+  ]},
+  burkes: { div: 32, offs: [
+    [1, 0, 8], [2, 0, 4],
+    [-2, 1, 2], [-1, 1, 4], [0, 1, 8], [1, 1, 4], [2, 1, 2],
+  ]},
+  sierra: { div: 32, offs: [
+    [1, 0, 5], [2, 0, 3],
+    [-2, 1, 2], [-1, 1, 4], [0, 1, 5], [1, 1, 4], [2, 1, 2],
+    [-1, 2, 2], [0, 2, 3], [1, 2, 2],
+  ]},
+};
+
+// Bayer matrices (normalized 0..1)
+function bayerMatrix(n) {
+  // n ∈ {2, 4, 8}
+  const m2 = [[0, 2], [3, 1]];
+  function expand(m) {
+    const s = m.length, ns = s * 2;
+    const out = Array.from({ length: ns }, () => new Array(ns));
+    for (let y = 0; y < s; y++) for (let x = 0; x < s; x++) {
+      const v = m[y][x] * 4;
+      out[y][x] = v;
+      out[y][x + s] = v + 2;
+      out[y + s][x] = v + 3;
+      out[y + s][x + s] = v + 1;
+    }
+    return out;
+  }
+  let m = m2;
+  while (m.length < n) m = expand(m);
+  const denom = n * n;
+  return m.map(row => row.map(v => (v + 0.5) / denom - 0.5));
+}
+
+const BAYER = { 2: bayerMatrix(2), 4: bayerMatrix(4), 8: bayerMatrix(8) };
+
+// ---------- Dither routines ----------
+
+function ditherErrorDiffusion(imgData, kernel, quantize, mode, strength, serpentine) {
+  const { data, width: w, height: h } = imgData;
+  // Work in floating point
+  const buf = new Float32Array(data.length);
+  for (let i = 0; i < data.length; i++) buf[i] = data[i];
+
+  for (let y = 0; y < h; y++) {
+    const leftToRight = !serpentine || (y % 2 === 0);
+    const xStart = leftToRight ? 0 : w - 1;
+    const xEnd = leftToRight ? w : -1;
+    const xStep = leftToRight ? 1 : -1;
+    for (let x = xStart; x !== xEnd; x += xStep) {
+      const i = (y * w + x) * 4;
+      const or = buf[i], og = buf[i + 1], ob = buf[i + 2];
+      const [qr, qg, qb] = quantize(or, og, ob, 0);
+      data[i] = clamp8(qr); data[i + 1] = clamp8(qg); data[i + 2] = clamp8(qb);
+      const er = (or - qr) * strength;
+      const eg = (og - qg) * strength;
+      const eb = (ob - qb) * strength;
+      for (const [dx0, dy, wgt] of kernel.offs) {
+        const dx = leftToRight ? dx0 : -dx0;
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        const ni = (ny * w + nx) * 4;
+        const f = wgt / kernel.div;
+        buf[ni] += er * f;
+        buf[ni + 1] += eg * f;
+        buf[ni + 2] += eb * f;
+      }
+    }
+  }
+}
+
+function ditherOrdered(imgData, matrix, quantize, mode, threshold) {
+  const { data, width: w, height: h } = imgData;
+  const n = matrix.length;
+  // For mono: use matrix as additive bias in 0..255.
+  // For color/gray levels: use as bias that's a fraction of the quantization step.
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const m = matrix[y % n][x % n];
+      let bias;
+      if (mode === "mono") {
+        // Bias pushes luminance past the chosen threshold
+        bias = m * 255 + (128 - threshold);
+        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      } else {
+        // Add bias proportional to step size for levels modes
+        const b = m * 255;
+        const [qr, qg, qb] = quantize(data[i] + b, data[i + 1] + b, data[i + 2] + b, 0);
+        data[i] = qr; data[i + 1] = qg; data[i + 2] = qb;
+      }
+    }
+  }
+}
+
+function ditherRandom(imgData, quantize, mode, threshold) {
+  const { data, width: w, height: h } = imgData;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const noise = (Math.random() - 0.5) * 255;
+      if (mode === "mono") {
+        const bias = noise + (128 - threshold);
+        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      } else {
+        const [qr, qg, qb] = quantize(data[i] + noise, data[i + 1] + noise, data[i + 2] + noise, 0);
+        data[i] = qr; data[i + 1] = qg; data[i + 2] = qb;
+      }
+    }
+  }
+}
+
+function ditherThreshold(imgData, quantize, mode, threshold) {
+  const { data, width: w, height: h } = imgData;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (mode === "mono") {
+        const bias = 128 - threshold;
+        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+      } else {
+        const [qr, qg, qb] = quantize(data[i], data[i + 1], data[i + 2], 0);
+        data[i] = qr; data[i + 1] = qg; data[i + 2] = qb;
+      }
+    }
+  }
+}
+
+// ---------- Effects ----------
+
+function drawCenterDot(out, octx, imgData, ww, hh) {
+  const cell = +$("fx_dot_cell").value;
+  const dotPct = +$("fx_dot_size").value / 100;
+  const shape = $("fx_dot_shape").value;
+  const colorMode = $("fx_dot_colorMode").value;
+  const fixedHex = $("fx_dot_color").value;
+  const bgCell = $("fx_dot_bgCell").checked;
+  const bgMode = $("fx_dot_bgMode").value;
+  const bgFixedHex = $("fx_dot_bgColor").value;
+
+  out.width = ww * cell;
+  out.height = hh * cell;
+  octx.imageSmoothingEnabled = false;
+
+  const src = imgData.data;
+  const dotR = (cell * dotPct) / 2;
+  const fixedRgb = hexToRgb(fixedHex);
+  const bgFixedRgb = hexToRgb(bgFixedHex);
+  const dotPalRgb = state.dotPalette.map(hexToRgb);
+  const palN = dotPalRgb.length;
+  const bgPalRgb = state.dotBgPalette.map(hexToRgb);
+  const bgPalN = bgPalRgb.length;
+
+  // Clear
+  octx.clearRect(0, 0, out.width, out.height);
+
+  for (let y = 0; y < hh; y++) {
+    for (let x = 0; x < ww; x++) {
+      const i = (y * ww + x) * 4;
+      const r = src[i], g = src[i + 1], b = src[i + 2];
+
+      const px0 = x * cell;
+      const py0 = y * cell;
+
+      if (bgCell) {
+        let br, bg, bb;
+        if (bgMode === "fixed") {
+          [br, bg, bb] = bgFixedRgb;
+        } else if (bgMode === "palette_lum" && bgPalN > 0) {
+          const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
+          const idx = Math.min(bgPalN - 1, Math.max(0, Math.floor((y255 / 256) * bgPalN)));
+          [br, bg, bb] = bgPalRgb[idx];
+        } else if (bgMode === "palette_random" && bgPalN > 0) {
+          const h = hash2(x + 1013, y + 2017);
+          [br, bg, bb] = bgPalRgb[h % bgPalN];
+        } else if (bgMode === "palette_nearest" && bgPalN > 0) {
+          [br, bg, bb] = findClosest(bgPalRgb, r, g, b);
+        } else {
+          br = r; bg = g; bb = b;
+        }
+        octx.fillStyle = `rgb(${br},${bg},${bb})`;
+        octx.fillRect(px0, py0, cell, cell);
+      }
+
+      if (dotR <= 0) continue;
+
+      let dr, dg, db;
+      if (colorMode === "fixed") {
+        [dr, dg, db] = fixedRgb;
+      } else if (colorMode === "palette_lum" && palN > 0) {
+        const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
+        const idx = Math.min(palN - 1, Math.max(0, Math.floor((y255 / 256) * palN)));
+        [dr, dg, db] = dotPalRgb[idx];
+      } else if (colorMode === "palette_random" && palN > 0) {
+        // deterministic per-cell hash so the pattern is stable across renders
+        const h = hash2(x, y);
+        [dr, dg, db] = dotPalRgb[h % palN];
+      } else if (colorMode === "palette_nearest" && palN > 0) {
+        [dr, dg, db] = findClosest(dotPalRgb, r, g, b);
+      } else {
+        // auto-invert (default / fallback if palette empty)
+        dr = 255 - r; dg = 255 - g; db = 255 - b;
+      }
+      octx.fillStyle = `rgb(${dr},${dg},${db})`;
+      octx.strokeStyle = octx.fillStyle;
+
+      const cx = px0 + cell / 2;
+      const cy = py0 + cell / 2;
+      drawShape(octx, shape, cx, cy, dotR);
+    }
+  }
+}
+
+// Stable integer hash from 2D coords — used for per-cell random palette pick
+function hash2(x, y) {
+  let h = (x * 73856093) ^ (y * 19349663);
+  h = (h ^ (h >>> 13)) >>> 0;
+  h = Math.imul(h, 1274126177) >>> 0;
+  return h ^ (h >>> 16);
+}
+
+function drawShape(ctx, shape, cx, cy, r) {
+  if (r <= 0) return;
+  ctx.beginPath();
+  if (shape === "circle") {
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (shape === "square") {
+    const s = r * 2;
+    ctx.fillRect(cx - r, cy - r, s, s);
+  } else if (shape === "diamond") {
+    ctx.moveTo(cx, cy - r);
+    ctx.lineTo(cx + r, cy);
+    ctx.lineTo(cx, cy + r);
+    ctx.lineTo(cx - r, cy);
+    ctx.closePath();
+    ctx.fill();
+  } else if (shape === "plus") {
+    const thick = Math.max(1, r * 0.55);
+    ctx.fillRect(cx - r, cy - thick / 2, r * 2, thick);
+    ctx.fillRect(cx - thick / 2, cy - r, thick, r * 2);
+  } else if (shape === "ring") {
+    const lw = Math.max(1, r * 0.4);
+    ctx.lineWidth = lw;
+    ctx.arc(cx, cy, Math.max(0.5, r - lw / 2), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+// ---------- Main render ----------
+
+function render() {
+  const viewport = $("viewport");
+  const empty = $("emptyState");
+  if (!state.img) { viewport.innerHTML = ""; empty.style.display = ""; return; }
+  empty.style.display = "none";
+
+  const img = state.img;
+  const algo = $("algo").value;
+  const brightness = +$("brightness").value;
+  const contrast = +$("contrast").value;
+  const gamma = +$("gamma").value / 100;
+  const sat = +$("sat").value / 100;
+  const threshold = +$("threshold").value;
+  const strength = +$("strength").value / 100;
+  const px = +$("px").value;
+  const levels = +$("levels").value;
+  const serpentine = $("serpentine").checked;
+  const invert = $("invert").checked;
+  const mode = $("colorMode").value;
+  const c0 = $("c0").value, c1 = $("c1").value;
+
+  // Fit source to a max dimension so adjustments stay interactive
+  const maxDim = 1400;
+  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+  const W = Math.max(1, Math.round(img.naturalWidth * scale));
+  const H = Math.max(1, Math.round(img.naturalHeight * scale));
+
+  // Downscale for pixelation
+  let ww = Math.max(1, Math.floor(W / px));
+  let hh = Math.max(1, Math.floor(H / px));
+
+  // If the Center Dot effect is on, cap the output canvas so we don't blow past
+  // a few thousand pixels per side. Reduce ww/hh proportionally.
+  if ($("fx_dot").checked) {
+    const cell = +$("fx_dot_cell").value;
+    const MAX_OUT = 4000;
+    const biggest = Math.max(ww, hh) * cell;
+    if (biggest > MAX_OUT) {
+      const s = MAX_OUT / biggest;
+      ww = Math.max(1, Math.floor(ww * s));
+      hh = Math.max(1, Math.floor(hh * s));
+    }
+  }
+
+  const small = document.createElement("canvas");
+  small.width = ww; small.height = hh;
+  const sctx = small.getContext("2d", { willReadFrequently: true });
+  sctx.imageSmoothingEnabled = true;
+  sctx.drawImage(img, 0, 0, ww, hh);
+
+  const imgData = sctx.getImageData(0, 0, ww, hh);
+
+  applyAdjustments(imgData.data, brightness, contrast, gamma, sat);
+  if (invert) invertData(imgData.data);
+
+  const quantize = makeQuantizer(mode, levels, c0, c1, state.palette);
+
+  if (KERNELS[algo]) {
+    ditherErrorDiffusion(imgData, KERNELS[algo], quantize, mode, strength, serpentine);
+  } else if (algo === "bayer2") {
+    ditherOrdered(imgData, BAYER[2], quantize, mode, threshold);
+  } else if (algo === "bayer4") {
+    ditherOrdered(imgData, BAYER[4], quantize, mode, threshold);
+  } else if (algo === "bayer8") {
+    ditherOrdered(imgData, BAYER[8], quantize, mode, threshold);
+  } else if (algo === "random") {
+    ditherRandom(imgData, quantize, mode, threshold);
+  } else if (algo === "threshold") {
+    ditherThreshold(imgData, quantize, mode, threshold);
+  } else {
+    // none: just quantize
+    ditherThreshold(imgData, quantize, mode, threshold);
+  }
+
+  sctx.putImageData(imgData, 0, 0);
+
+  // Collect effects state
+  const fxDotOn = $("fx_dot").checked;
+
+  const out = document.createElement("canvas");
+  const octx = out.getContext("2d");
+
+  if (fxDotOn) {
+    drawCenterDot(out, octx, imgData, ww, hh);
+  } else {
+    // Default: nearest-neighbor upscale to final size
+    out.width = ww * px;
+    out.height = hh * px;
+    octx.imageSmoothingEnabled = false;
+    octx.drawImage(small, 0, 0, out.width, out.height);
+  }
+
+  viewport.innerHTML = "";
+  viewport.appendChild(out);
+
+  // Fit on first render after a new image load
+  if (state.needsFit) { state.needsFit = false; zoomFit(); }
+  else applyTransform();
+}
+
+// ---------- Zoom & pan ----------
+// Supports: trackpad pinch (ctrl+wheel), wheel zoom (Cmd/Ctrl+wheel),
+// regular wheel = scroll/pan, two-finger touch pinch, mouse/touch drag to pan,
+// double-click to fit.
+
+const view = {
+  scale: 1, tx: 0, ty: 0,
+  minScale: 0.05, maxScale: 32,
+};
+
+function applyTransform() {
+  const vp = $("viewport");
+  vp.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`;
+  $("zoomReadout").textContent = Math.round(view.scale * 100) + "%";
+}
+
+function clampScale(s) { return Math.max(view.minScale, Math.min(view.maxScale, s)); }
+
+// Zoom around a point in main-element coordinates, keeping that point fixed
+function zoomAt(cx, cy, factor) {
+  const prev = view.scale;
+  const next = clampScale(prev * factor);
+  if (next === prev) return;
+  // world point under cursor before zoom: (cx - tx) / scale
+  // keep it under cursor after: tx' = cx - worldX * next
+  const worldX = (cx - view.tx) / prev;
+  const worldY = (cy - view.ty) / prev;
+  view.scale = next;
+  view.tx = cx - worldX * next;
+  view.ty = cy - worldY * next;
+  applyTransform();
+}
+
+function zoomFit() {
+  const main = $("main");
+  const vp = $("viewport");
+  const canvas = vp.querySelector("canvas");
+  if (!canvas) { view.scale = 1; view.tx = 0; view.ty = 0; applyTransform(); return; }
+  const mw = main.clientWidth, mh = main.clientHeight;
+  const cw = canvas.width, ch = canvas.height;
+  const pad = 40;
+  const s = clampScale(Math.min((mw - pad) / cw, (mh - pad) / ch));
+  view.scale = s;
+  view.tx = (mw - cw * s) / 2;
+  view.ty = (mh - ch * s) / 2;
+  applyTransform();
+}
+
+function mainLocal(e) {
+  const r = $("main").getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+}
+
+// Wheel: ctrlKey true for trackpad pinch AND Cmd/Ctrl+wheel (browsers coerce both)
+$("main").addEventListener("wheel", (e) => {
+  if (!$("viewport").querySelector("canvas")) return;
+  e.preventDefault();
+  const [cx, cy] = mainLocal(e);
+  if (e.ctrlKey || e.metaKey) {
+    // pinch / modifier-zoom — deltaY in small increments
+    const factor = Math.exp(-e.deltaY * 0.01);
+    zoomAt(cx, cy, factor);
+  } else {
+    // regular scroll = pan
+    view.tx -= e.deltaX;
+    view.ty -= e.deltaY;
+    applyTransform();
+  }
+}, { passive: false });
+
+// Mouse drag to pan
+let dragging = null;
+$("main").addEventListener("mousedown", (e) => {
+  if (e.button !== 0) return;
+  if (!$("viewport").querySelector("canvas")) return;
+  dragging = { x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+  $("viewport").classList.add("panning");
+});
+window.addEventListener("mousemove", (e) => {
+  if (!dragging) return;
+  view.tx = dragging.tx + (e.clientX - dragging.x);
+  view.ty = dragging.ty + (e.clientY - dragging.y);
+  applyTransform();
+});
+window.addEventListener("mouseup", () => {
+  dragging = null;
+  $("viewport").classList.remove("panning");
+});
+
+// Touch: 1-finger pan, 2-finger pinch
+const touches = new Map();
+let pinchState = null;
+
+function touchCenterAndDist() {
+  const pts = [...touches.values()];
+  const [a, b] = pts;
+  const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+  const d = Math.hypot(a.x - b.x, a.y - b.y);
+  return { cx, cy, d };
+}
+
+$("main").addEventListener("touchstart", (e) => {
+  if (!$("viewport").querySelector("canvas")) return;
+  for (const t of e.changedTouches) {
+    const r = $("main").getBoundingClientRect();
+    touches.set(t.identifier, { x: t.clientX - r.left, y: t.clientY - r.top });
+  }
+  if (touches.size === 2) {
+    const c = touchCenterAndDist();
+    pinchState = { ...c, startScale: view.scale, startTx: view.tx, startTy: view.ty };
+  } else if (touches.size === 1) {
+    const [t] = touches.values();
+    pinchState = null;
+    dragging = { x: t.x + $("main").getBoundingClientRect().left, y: t.y + $("main").getBoundingClientRect().top, tx: view.tx, ty: view.ty, touch: true };
+  }
+}, { passive: false });
+
+$("main").addEventListener("touchmove", (e) => {
+  if (!touches.size) return;
+  e.preventDefault();
+  const r = $("main").getBoundingClientRect();
+  for (const t of e.changedTouches) {
+    if (touches.has(t.identifier)) {
+      touches.set(t.identifier, { x: t.clientX - r.left, y: t.clientY - r.top });
+    }
+  }
+  if (touches.size === 2 && pinchState) {
+    const c = touchCenterAndDist();
+    // Scale anchored to the pinch center (in main coords) at gesture start
+    const targetScale = clampScale(pinchState.startScale * (c.d / pinchState.d));
+    // World point under original center
+    const worldX = (pinchState.cx - pinchState.startTx) / pinchState.startScale;
+    const worldY = (pinchState.cy - pinchState.startTy) / pinchState.startScale;
+    view.scale = targetScale;
+    // Translate so current pinch center matches the same world point
+    view.tx = c.cx - worldX * targetScale;
+    view.ty = c.cy - worldY * targetScale;
+    applyTransform();
+  } else if (touches.size === 1 && dragging && dragging.touch) {
+    const [t] = touches.values();
+    const clientX = t.x + r.left, clientY = t.y + r.top;
+    view.tx = dragging.tx + (clientX - dragging.x);
+    view.ty = dragging.ty + (clientY - dragging.y);
+    applyTransform();
+  }
+}, { passive: false });
+
+function endTouch(e) {
+  for (const t of e.changedTouches) touches.delete(t.identifier);
+  if (touches.size < 2) pinchState = null;
+  if (touches.size === 0) dragging = null;
+  if (touches.size === 1) {
+    const [t] = touches.values();
+    const r = $("main").getBoundingClientRect();
+    dragging = { x: t.x + r.left, y: t.y + r.top, tx: view.tx, ty: view.ty, touch: true };
+  }
+}
+$("main").addEventListener("touchend", endTouch);
+$("main").addEventListener("touchcancel", endTouch);
+
+// HUD buttons
+$("zoomIn").addEventListener("click", () => {
+  const r = $("main").getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1.25);
+});
+$("zoomOut").addEventListener("click", () => {
+  const r = $("main").getBoundingClientRect();
+  zoomAt(r.width / 2, r.height / 2, 1 / 1.25);
+});
+$("zoomFit").addEventListener("click", zoomFit);
+
+// Double-click / double-tap: fit
+$("main").addEventListener("dblclick", (e) => {
+  if (!$("viewport").querySelector("canvas")) return;
+  e.preventDefault();
+  zoomFit();
+});
+
+// Re-fit on window resize if viewport is fully visible
+window.addEventListener("resize", () => { /* keep current transform; user can hit Fit */ });
+
+// Drag-and-drop onto the main area
+const stage = $("stage");
+document.body.addEventListener("dragover", (e) => { e.preventDefault(); });
+document.body.addEventListener("drop", (e) => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  $("file").files = e.dataTransfer.files;
+  $("file").dispatchEvent(new Event("change"));
+});
+</script>
+</body>
+</html>
