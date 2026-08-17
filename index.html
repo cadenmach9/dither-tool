@@ -244,6 +244,8 @@
           <input type="range" id="patternScale" min="8" max="200" value="48" />
           <div class="hint">Tile size in pixels — the logo grows and shrinks with tone</div>
         </label>
+        <label class="checkbox"><input type="checkbox" id="patternFlip" /> Flip mark / ground</label>
+        <div class="hint">On if your logo is dark art on a light background</div>
       </div>
     </div>
 
@@ -557,6 +559,8 @@ const fxDotRanges = [
   ["fx_dot_size", "fx_dot_sizeV", v => v + "%",  s => idn(s)],
 ];
 for (const binding of fxDotRanges) bindRangeAndReadout(...binding);
+$("patternFlip").addEventListener("change", scheduleRender);
+
 for (const id of ["fx_dot_shape", "fx_dot_color", "fx_dot_colorMode", "fx_dot_bgCell", "fx_dot_bgMode", "fx_dot_bgColor"]) {
   $(id).addEventListener("input", scheduleRender);
   $(id).addEventListener("change", scheduleRender);
@@ -710,7 +714,7 @@ $("patternFile").addEventListener("change", (e) => {
       const screen = patternScreen();
       $("patternInfo").textContent = screen
         ? `${f.name} — ${img.naturalWidth} × ${img.naturalHeight}`
-        : `${f.name} has no transparency — needs an alpha channel to trace`;
+        : `${f.name} is a flat image — no light/dark split to trace`;
       render();
     };
     img.src = ev.target.result;
@@ -1030,19 +1034,30 @@ function buildPatternScreen(img, scale) {
   const c = document.createElement("canvas");
   c.width = tw; c.height = th;
   const cx = c.getContext("2d", { willReadFrequently: true });
-  cx.clearRect(0, 0, tw, th);
+  // Composite onto black so transparent areas read as background — that way one
+  // intensity pass covers art on transparency and art on a solid ground alike.
+  cx.fillStyle = "#000";
+  cx.fillRect(0, 0, tw, th);
   cx.drawImage(img, 0, 0, tw, th);
   const px = cx.getImageData(0, 0, tw, th).data;
 
-  // The silhouette comes from the alpha channel, not the colors — logos are
-  // usually flat art on transparency, and alpha is the only reliable mask.
-  const mask = new Uint8Array(tw * th);
-  let opaque = 0;
+  // The silhouette comes from intensity. Threshold at the midpoint of the
+  // image's own range rather than a fixed 128, so low-contrast art still splits
+  // cleanly into mark and ground.
+  const luma = new Float32Array(tw * th);
+  let lo = Infinity, hi = -Infinity;
   for (let i = 0; i < tw * th; i++) {
-    mask[i] = px[i * 4 + 3] > 127 ? 1 : 0;
-    opaque += mask[i];
+    const v = 0.2126 * px[i * 4] + 0.7152 * px[i * 4 + 1] + 0.0722 * px[i * 4 + 2];
+    luma[i] = v;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
   }
-  if (opaque === 0 || opaque === tw * th) return null; // uniform alpha: no shape to trace
+  if (hi - lo < 8) return null; // flat image: nothing to trace
+
+  const cut = (lo + hi) / 2;
+  const flip = $("patternFlip").checked;
+  const mask = new Uint8Array(tw * th);
+  for (let i = 0; i < tw * th; i++) mask[i] = (luma[i] >= cut) !== flip ? 1 : 0;
 
   // Run the transform over a 3×3 tiling so distances wrap across tile seams and
   // the screen stays continuous where cells meet.
@@ -1109,7 +1124,7 @@ let patternCache = { key: "", data: null };
 function patternScreen() {
   if (!state.pattern) { drawPatternPreview(null); return null; }
   const scale = +$("patternScale").value;
-  const key = `${state.patternToken}|${scale}`;
+  const key = `${state.patternToken}|${scale}|${$("patternFlip").checked}`;
   if (patternCache.key !== key) {
     patternCache = { key, data: buildPatternScreen(state.pattern, scale) };
     drawPatternPreview(patternCache.data);
