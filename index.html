@@ -122,6 +122,12 @@
   .checkbox input { width: auto; accent-color: var(--accent); }
   canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
   .empty { color: var(--muted); text-align: center; padding: 40px; border: 2px dashed var(--border); border-radius: 10px; }
+  #patternPreview {
+    display: block; width: 100%; height: auto; margin-top: 8px;
+    image-rendering: pixelated; box-shadow: none;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-2);
+  }
   .file-input { position: relative; overflow: hidden; }
   .file-input input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -226,6 +232,13 @@
           </button>
         </div>
         <div class="hint" id="patternInfo">No pattern loaded — falling back to round dots</div>
+        <canvas id="patternPreview" style="display:none"></canvas>
+        <div class="hint" id="patternPreviewHint" style="display:none">
+          Distance field, 2×2 tiles — bright inside the mark, dark outside, edge on the contour
+        </div>
+        <div class="btn-row">
+          <button id="downloadSdf">Save SDF PNG</button>
+        </div>
         <label>
           <div class="row"><span>Logo scale</span><input class="val" id="patternScaleV" inputmode="numeric" value="48" /></div>
           <input type="range" id="patternScale" min="8" max="200" value="48" />
@@ -523,6 +536,7 @@ function syncAlgoUI() {
   const a = $("algo").value;
   $("halftoneCellLabel").style.display = a === "halftone" ? "" : "none";
   $("patternControls").style.display = a === "pattern" ? "" : "none";
+  if (a === "pattern") patternScreen(); // refreshes the preview
 }
 $("algo").addEventListener("change", syncAlgoUI);
 syncAlgoUI();
@@ -702,6 +716,27 @@ $("patternFile").addEventListener("change", (e) => {
     img.src = ev.target.result;
   };
   reader.readAsDataURL(f);
+});
+
+$("downloadSdf").addEventListener("click", () => {
+  const p = patternScreen() && patternCache.data;
+  if (!p) return;
+  // Export a single tile at full precision rather than the 2×2 preview.
+  const cv = document.createElement("canvas");
+  cv.width = p.tw; cv.height = p.th;
+  const ctx = cv.getContext("2d");
+  const id = ctx.createImageData(p.tw, p.th);
+  let maxAbs = 1e-6;
+  for (let i = 0; i < p.sdf.length; i++) maxAbs = Math.max(maxAbs, Math.abs(p.sdf[i]));
+  for (let i = 0; i < p.sdf.length; i++) {
+    const g = Math.round(128 - (p.sdf[i] / maxAbs) * 127);
+    id.data[i * 4] = g; id.data[i * 4 + 1] = g; id.data[i * 4 + 2] = g; id.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+  const a = document.createElement("a");
+  a.href = cv.toDataURL("image/png");
+  a.download = "pattern-sdf.png";
+  a.click();
 });
 
 $("download").addEventListener("click", () => {
@@ -1018,26 +1053,68 @@ function buildPatternScreen(img, scale) {
   }
   const sdf = signedDistanceField(big, W, H);
 
+  // Keep the center tile of the field: it drives the screen below, and it is
+  // what the preview draws.
+  const tile = new Float32Array(tw * th);
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) tile[y * tw + x] = sdf[(y + th) * W + (x + tw)];
+  }
+
   // Rank the distances into evenly spaced thresholds — same trick as the
   // clustered-dot screen, so tone response stays linear across the range.
   const cells = [];
   for (let y = 0; y < th; y++) {
-    for (let x = 0; x < tw; x++) cells.push({ x, y, d: sdf[(y + th) * W + (x + tw)] });
+    for (let x = 0; x < tw; x++) cells.push({ x, y, d: tile[y * tw + x] });
   }
   cells.sort((a, b) => a.d - b.d);
-  const out = Array.from({ length: th }, () => new Array(tw));
+  const screen = Array.from({ length: th }, () => new Array(tw));
   const denom = tw * th;
-  cells.forEach((cell, rank) => { out[cell.y][cell.x] = (rank + 0.5) / denom - 0.5; });
-  return out;
+  cells.forEach((cell, rank) => { screen[cell.y][cell.x] = (rank + 0.5) / denom - 0.5; });
+  return { screen, sdf: tile, tw, th };
 }
 
-let patternCache = { key: "", screen: null };
+// Paint the distance field itself: mid-gray on the contour, brightening inward
+// and darkening outward. Drawn 2×2 so the seamless wrap is visible.
+function drawPatternPreview(p) {
+  const cv = $("patternPreview");
+  const hint = $("patternPreviewHint");
+  if (!p) { cv.style.display = "none"; hint.style.display = "none"; return; }
+  cv.style.display = ""; hint.style.display = "";
+
+  const { sdf, tw, th } = p;
+  const w = tw * 2, h = th * 2;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const id = ctx.createImageData(w, h);
+
+  let maxAbs = 1e-6;
+  for (let i = 0; i < sdf.length; i++) maxAbs = Math.max(maxAbs, Math.abs(sdf[i]));
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = sdf[(y % th) * tw + (x % tw)];
+      const g = Math.round(128 - (d / maxAbs) * 127);
+      const i = (y * w + x) * 4;
+      const onEdge = Math.abs(d) < 0.75;
+      id.data[i] = onEdge ? 0x77 : g;
+      id.data[i + 1] = onEdge ? 0xcc : g;
+      id.data[i + 2] = onEdge ? 0xff : g;
+      id.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+let patternCache = { key: "", data: null };
 function patternScreen() {
-  if (!state.pattern) return null;
+  if (!state.pattern) { drawPatternPreview(null); return null; }
   const scale = +$("patternScale").value;
   const key = `${state.patternToken}|${scale}`;
-  if (patternCache.key !== key) patternCache = { key, screen: buildPatternScreen(state.pattern, scale) };
-  return patternCache.screen;
+  if (patternCache.key !== key) {
+    patternCache = { key, data: buildPatternScreen(state.pattern, scale) };
+    drawPatternPreview(patternCache.data);
+  }
+  return patternCache.data ? patternCache.data.screen : null;
 }
 
 // ---------- Dither routines ----------
