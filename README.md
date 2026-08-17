@@ -6,7 +6,7 @@ A browser-based image dithering tool in a single HTML file. No build step, no de
 
 ## Features
 
-- **Dithering algorithms**: Floyd–Steinberg and Atkinson error diffusion (with optional serpentine scanning), ordered Bayer matrix, random, and plain threshold
+- **Dithering algorithms**: Floyd–Steinberg and Atkinson error diffusion (with optional serpentine scanning), ordered Bayer matrix, clustered-dot halftone with adjustable cell size, random, and plain threshold
 - **Color modes**: monochrome with customizable ink/paper colors, or custom palettes (nearest-color, luminance-mapped, or random assignment) with an inline palette editor
 - **Image adjustments**: brightness, contrast, gamma, saturation, levels, invert, and dither strength
 - **Pixelation** control for chunky low-res looks

@@ -206,10 +206,16 @@
           <option value="bayer2">Bayer 2×2</option>
           <option value="bayer4">Bayer 4×4</option>
           <option value="bayer8" selected>Bayer 8×8</option>
+          <option value="halftone">Halftone (clustered dot)</option>
           <option value="random">Random (white noise)</option>
           <option value="threshold">Threshold</option>
           <option value="none">None (just quantize)</option>
         </select>
+      </label>
+      <label id="halftoneCellLabel" style="display:none">
+        <div class="row"><span>Halftone cell</span><input class="val" id="halftoneCellV" inputmode="numeric" value="8" /></div>
+        <input type="range" id="halftoneCell" min="4" max="24" value="8" />
+        <div class="hint">Screen size in pixels — bigger cells, coarser dots</div>
       </label>
     </div>
 
@@ -440,6 +446,7 @@ const rangeBindings = [
   ["strength",   "strengthV",   v => (v / 100).toFixed(2),  s => Math.round(idn(s) * 100)],
   ["px",         "pxV",         v => v,                     s => idn(s)],
   ["levels",     "levelsV",     v => v,                     s => idn(s)],
+  ["halftoneCell", "halftoneCellV", v => v,                 s => idn(s)],
 ];
 
 for (const binding of rangeBindings) bindRangeAndReadout(...binding);
@@ -493,6 +500,12 @@ for (const id of ["algo", "colorMode", "c0", "c1", "serpentine", "invert"]) {
   $(id).addEventListener("input", scheduleRender);
   $(id).addEventListener("change", scheduleRender);
 }
+
+function syncAlgoUI() {
+  $("halftoneCellLabel").style.display = $("algo").value === "halftone" ? "" : "none";
+}
+$("algo").addEventListener("change", syncAlgoUI);
+syncAlgoUI();
 
 // --- Tabs ---
 document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -856,6 +869,34 @@ function bayerMatrix(n) {
 
 const BAYER = { 2: bayerMatrix(2), 4: bayerMatrix(4), 8: bayerMatrix(8) };
 
+// Clustered-dot halftone screen (normalized -0.5..0.5, same contract as Bayer).
+// Dots sit on a 45°-rotated lattice — the classic newspaper screen — and grow
+// outward from their centers as the tone darkens.
+const HALFTONE_CACHE = new Map();
+function halftoneMatrix(n) {
+  if (HALFTONE_CACHE.has(n)) return HALFTONE_CACHE.get(n);
+  // Spot function: cosine waves running along both diagonals, so the peaks
+  // (future dot centers) land on the rotated lattice. The +0.5 offsets keep
+  // peaks between pixels, which keeps each dot symmetric.
+  const cells = [];
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const u = (2 * Math.PI * (x + y + 0.5)) / n;
+      const v = (2 * Math.PI * (x - y + 0.5)) / n;
+      cells.push({ x, y, s: Math.cos(u) + Math.cos(v) });
+    }
+  }
+  // Rank the spot values into evenly spaced thresholds so every tone is
+  // reachable: highest spot (dot center) gets the lowest threshold, so it inks
+  // first and the dot grows from there.
+  cells.sort((a, b) => b.s - a.s);
+  const out = Array.from({ length: n }, () => new Array(n));
+  const denom = n * n;
+  cells.forEach((c, rank) => { out[c.y][c.x] = (rank + 0.5) / denom - 0.5; });
+  HALFTONE_CACHE.set(n, out);
+  return out;
+}
+
 // ---------- Dither routines ----------
 
 function ditherErrorDiffusion(imgData, kernel, quantize, mode, strength, serpentine) {
@@ -1139,6 +1180,8 @@ function render() {
     ditherOrdered(imgData, BAYER[4], quantize, mode, threshold);
   } else if (algo === "bayer8") {
     ditherOrdered(imgData, BAYER[8], quantize, mode, threshold);
+  } else if (algo === "halftone") {
+    ditherOrdered(imgData, halftoneMatrix(+$("halftoneCell").value), quantize, mode, threshold);
   } else if (algo === "random") {
     ditherRandom(imgData, quantize, mode, threshold);
   } else if (algo === "threshold") {
