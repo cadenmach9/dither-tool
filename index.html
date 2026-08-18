@@ -129,6 +129,21 @@
     background: var(--panel-2);
   }
   .file-input { position: relative; overflow: hidden; }
+  .export-wrap { position: relative; }
+  .export-menu {
+    position: absolute; top: calc(100% + 4px); right: 0; left: 0;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px; z-index: 10;
+    display: none; flex-direction: column; gap: 2px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+  }
+  .export-menu.open { display: flex; }
+  .export-menu button {
+    border: none; background: transparent; text-align: left;
+    padding: 7px 10px; border-radius: 6px;
+  }
+  .export-menu button:hover { background: #2a2a32; }
+  .export-menu .sub { display: block; color: var(--muted); font-size: 11px; }
   .file-input input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
@@ -187,7 +202,13 @@
           Load Image
           <input type="file" id="file" accept="image/*" />
         </button>
-        <button id="download">Download PNG</button>
+        <div class="export-wrap">
+          <button id="exportBtn">Export ▾</button>
+          <div class="export-menu" id="exportMenu">
+            <button id="exportPng">PNG<span class="sub">Raster image</span></button>
+            <button id="exportSvg">SVG<span class="sub">Vector, for design work</span></button>
+          </div>
+        </div>
       </div>
       <div class="hint" id="imgInfo">No image loaded</div>
     </div>
@@ -743,7 +764,16 @@ $("downloadSdf").addEventListener("click", () => {
   a.click();
 });
 
-$("download").addEventListener("click", () => {
+// --- Export menu ---
+const exportMenu = $("exportMenu");
+$("exportBtn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  exportMenu.classList.toggle("open");
+});
+document.addEventListener("click", () => exportMenu.classList.remove("open"));
+
+$("exportPng").addEventListener("click", () => {
+  exportMenu.classList.remove("open");
   const canvas = document.querySelector("main canvas");
   if (!canvas) return;
   const a = document.createElement("a");
@@ -751,6 +781,107 @@ $("download").addEventListener("click", () => {
   a.download = "dithered.png";
   a.click();
 });
+
+$("exportSvg").addEventListener("click", () => {
+  exportMenu.classList.remove("open");
+  if (!state.last) return;
+  const svg = state.last.fxDotOn ? buildDotSVG(state.last) : buildPixelSVG(state.last);
+  const blob = new Blob([svg], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "dithered.svg";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+function rgbHex(r, g, b) {
+  return "#" + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
+}
+
+// Plain dithered output → SVG of merged horizontal runs of same-color rects
+function buildPixelSVG({ imgData, ww, hh, px }) {
+  const data = imgData.data;
+  const W = ww * px, H = hh * px;
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges">`
+  ];
+  // Group runs by color so each color becomes one <path> (small file, easy to select in vector apps)
+  const byColor = new Map();
+  for (let y = 0; y < hh; y++) {
+    let x = 0;
+    while (x < ww) {
+      const i = (y * ww + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      let x2 = x + 1;
+      while (x2 < ww) {
+        const j = (y * ww + x2) * 4;
+        if (data[j] !== r || data[j + 1] !== g || data[j + 2] !== b) break;
+        x2++;
+      }
+      const hex = rgbHex(r, g, b);
+      let d = byColor.get(hex);
+      if (!d) { d = []; byColor.set(hex, d); }
+      d.push(`M${x * px} ${y * px}h${(x2 - x) * px}v${px}h${-(x2 - x) * px}z`);
+      x = x2;
+    }
+  }
+  for (const [hex, d] of byColor) {
+    parts.push(`<path fill="${hex}" d="${d.join("")}"/>`);
+  }
+  parts.push("</svg>");
+  return parts.join("\n");
+}
+
+// Center Dot effect → true vector shapes per cell
+function buildDotSVG({ imgData, ww, hh }) {
+  const cfg = getDotConfig();
+  const { cell, dotR, shape } = cfg;
+  const data = imgData.data;
+  const W = ww * cell, H = hh * cell;
+  const parts = [
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`
+  ];
+  const bgRects = [];
+  const dots = [];
+  for (let y = 0; y < hh; y++) {
+    for (let x = 0; x < ww; x++) {
+      const i = (y * ww + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const px0 = x * cell, py0 = y * cell;
+      if (cfg.bgCell) {
+        const [br, bg2, bb] = cfg.bgColorFor(x, y, r, g, b);
+        bgRects.push(`<rect x="${px0}" y="${py0}" width="${cell}" height="${cell}" fill="${rgbHex(br, bg2, bb)}"/>`);
+      }
+      if (dotR <= 0) continue;
+      const [dr, dg, db] = cfg.dotColorFor(x, y, r, g, b);
+      const hex = rgbHex(dr, dg, db);
+      const cx = px0 + cell / 2, cy = py0 + cell / 2;
+      dots.push(svgShape(shape, cx, cy, dotR, hex));
+    }
+  }
+  parts.push(...bgRects, ...dots, "</svg>");
+  return parts.join("\n");
+}
+
+function svgShape(shape, cx, cy, r, hex) {
+  const f = (n) => +n.toFixed(2);
+  if (shape === "square") {
+    return `<rect x="${f(cx - r)}" y="${f(cy - r)}" width="${f(r * 2)}" height="${f(r * 2)}" fill="${hex}"/>`;
+  }
+  if (shape === "diamond") {
+    return `<polygon points="${f(cx)},${f(cy - r)} ${f(cx + r)},${f(cy)} ${f(cx)},${f(cy + r)} ${f(cx - r)},${f(cy)}" fill="${hex}"/>`;
+  }
+  if (shape === "plus") {
+    const t = Math.max(1, r * 0.55);
+    return `<path fill="${hex}" d="M${f(cx - r)} ${f(cy - t / 2)}h${f(r * 2)}v${f(t)}h${f(-r * 2)}z M${f(cx - t / 2)} ${f(cy - r)}h${f(t)}v${f(r * 2)}h${f(-t)}z"/>`;
+  }
+  if (shape === "ring") {
+    const lw = Math.max(1, r * 0.4);
+    return `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(Math.max(0.5, r - lw / 2))}" fill="none" stroke="${hex}" stroke-width="${f(lw)}"/>`;
+  }
+  // circle
+  return `<circle cx="${f(cx)}" cy="${f(cy)}" r="${f(r)}" fill="${hex}"/>`;
+}
 
 $("reset").addEventListener("click", () => {
   const defaults = {
@@ -1230,28 +1361,70 @@ function ditherThreshold(imgData, quantize, mode, threshold) {
 
 // ---------- Effects ----------
 
-function drawCenterDot(out, octx, imgData, ww, hh) {
+// Reads all Center Dot settings and returns them along with per-cell color
+// resolvers, so the canvas renderer and the SVG exporter stay in sync.
+function getDotConfig() {
   const cell = +$("fx_dot_cell").value;
   const dotPct = +$("fx_dot_size").value / 100;
   const shape = $("fx_dot_shape").value;
   const colorMode = $("fx_dot_colorMode").value;
-  const fixedHex = $("fx_dot_color").value;
   const bgCell = $("fx_dot_bgCell").checked;
   const bgMode = $("fx_dot_bgMode").value;
-  const bgFixedHex = $("fx_dot_bgColor").value;
+
+  const dotR = (cell * dotPct) / 2;
+  const fixedRgb = hexToRgb($("fx_dot_color").value);
+  const bgFixedRgb = hexToRgb($("fx_dot_bgColor").value);
+  const dotPalRgb = state.dotPalette.map(hexToRgb);
+  const palN = dotPalRgb.length;
+  const bgPalRgb = state.dotBgPalette.map(hexToRgb);
+  const bgPalN = bgPalRgb.length;
+
+  const bgColorFor = (x, y, r, g, b) => {
+    if (bgMode === "fixed") return bgFixedRgb;
+    if (bgMode === "palette_lum" && bgPalN > 0) {
+      const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
+      const idx = Math.min(bgPalN - 1, Math.max(0, Math.floor((y255 / 256) * bgPalN)));
+      return bgPalRgb[idx];
+    }
+    if (bgMode === "palette_random" && bgPalN > 0) {
+      return bgPalRgb[hash2(x + 1013, y + 2017) % bgPalN];
+    }
+    if (bgMode === "palette_nearest" && bgPalN > 0) {
+      return findClosest(bgPalRgb, r, g, b);
+    }
+    return [r, g, b];
+  };
+
+  const dotColorFor = (x, y, r, g, b) => {
+    if (colorMode === "fixed") return fixedRgb;
+    if (colorMode === "palette_lum" && palN > 0) {
+      const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
+      const idx = Math.min(palN - 1, Math.max(0, Math.floor((y255 / 256) * palN)));
+      return dotPalRgb[idx];
+    }
+    if (colorMode === "palette_random" && palN > 0) {
+      // deterministic per-cell hash so the pattern is stable across renders
+      return dotPalRgb[hash2(x, y) % palN];
+    }
+    if (colorMode === "palette_nearest" && palN > 0) {
+      return findClosest(dotPalRgb, r, g, b);
+    }
+    // auto-invert (default / fallback if palette empty)
+    return [255 - r, 255 - g, 255 - b];
+  };
+
+  return { cell, dotR, shape, bgCell, bgColorFor, dotColorFor };
+}
+
+function drawCenterDot(out, octx, imgData, ww, hh) {
+  const cfg = getDotConfig();
+  const { cell, dotR, shape, bgCell } = cfg;
 
   out.width = ww * cell;
   out.height = hh * cell;
   octx.imageSmoothingEnabled = false;
 
   const src = imgData.data;
-  const dotR = (cell * dotPct) / 2;
-  const fixedRgb = hexToRgb(fixedHex);
-  const bgFixedRgb = hexToRgb(bgFixedHex);
-  const dotPalRgb = state.dotPalette.map(hexToRgb);
-  const palN = dotPalRgb.length;
-  const bgPalRgb = state.dotBgPalette.map(hexToRgb);
-  const bgPalN = bgPalRgb.length;
 
   // Clear
   octx.clearRect(0, 0, out.width, out.height);
@@ -1265,44 +1438,14 @@ function drawCenterDot(out, octx, imgData, ww, hh) {
       const py0 = y * cell;
 
       if (bgCell) {
-        let br, bg, bb;
-        if (bgMode === "fixed") {
-          [br, bg, bb] = bgFixedRgb;
-        } else if (bgMode === "palette_lum" && bgPalN > 0) {
-          const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
-          const idx = Math.min(bgPalN - 1, Math.max(0, Math.floor((y255 / 256) * bgPalN)));
-          [br, bg, bb] = bgPalRgb[idx];
-        } else if (bgMode === "palette_random" && bgPalN > 0) {
-          const h = hash2(x + 1013, y + 2017);
-          [br, bg, bb] = bgPalRgb[h % bgPalN];
-        } else if (bgMode === "palette_nearest" && bgPalN > 0) {
-          [br, bg, bb] = findClosest(bgPalRgb, r, g, b);
-        } else {
-          br = r; bg = g; bb = b;
-        }
+        const [br, bg, bb] = cfg.bgColorFor(x, y, r, g, b);
         octx.fillStyle = `rgb(${br},${bg},${bb})`;
         octx.fillRect(px0, py0, cell, cell);
       }
 
       if (dotR <= 0) continue;
 
-      let dr, dg, db;
-      if (colorMode === "fixed") {
-        [dr, dg, db] = fixedRgb;
-      } else if (colorMode === "palette_lum" && palN > 0) {
-        const y255 = 0.299 * r + 0.587 * g + 0.114 * b;
-        const idx = Math.min(palN - 1, Math.max(0, Math.floor((y255 / 256) * palN)));
-        [dr, dg, db] = dotPalRgb[idx];
-      } else if (colorMode === "palette_random" && palN > 0) {
-        // deterministic per-cell hash so the pattern is stable across renders
-        const h = hash2(x, y);
-        [dr, dg, db] = dotPalRgb[h % palN];
-      } else if (colorMode === "palette_nearest" && palN > 0) {
-        [dr, dg, db] = findClosest(dotPalRgb, r, g, b);
-      } else {
-        // auto-invert (default / fallback if palette empty)
-        dr = 255 - r; dg = 255 - g; db = 255 - b;
-      }
+      const [dr, dg, db] = cfg.dotColorFor(x, y, r, g, b);
       octx.fillStyle = `rgb(${dr},${dg},${db})`;
       octx.strokeStyle = octx.fillStyle;
 
@@ -1435,6 +1578,9 @@ function render() {
 
   // Collect effects state
   const fxDotOn = $("fx_dot").checked;
+
+  // Keep the dithered result around for the SVG exporter
+  state.last = { imgData, ww, hh, px, fxDotOn };
 
   const out = document.createElement("canvas");
   const octx = out.getContext("2d");
