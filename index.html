@@ -322,6 +322,7 @@
         <div class="row"><span>Mode</span></div>
         <select id="colorMode">
           <option value="mono" selected>Monochrome (2 colors)</option>
+          <option value="ink">Single Color (transparent bg)</option>
           <option value="gray">Grayscale (N levels)</option>
           <option value="rgb">RGB (N levels per channel)</option>
           <option value="palette">Custom palette</option>
@@ -341,6 +342,14 @@
         <label>
           <div class="row"><span>Light color</span></div>
           <input type="color" id="c1" value="#ffffff" />
+        </label>
+      </div>
+
+      <div id="inkColors" style="display:none">
+        <label>
+          <div class="row"><span>Color</span></div>
+          <input type="color" id="inkColor" value="#000000" />
+          <div class="hint">Dark areas print as ink, light areas stay transparent — for screen printing</div>
         </label>
       </div>
 
@@ -550,7 +559,7 @@ function bindRangeAndReadout(sliderId, readoutId, fmt, parse) {
   readout.value = fmt(slider.value);
 }
 
-for (const id of ["algo", "colorMode", "c0", "c1", "serpentine", "invert"]) {
+for (const id of ["algo", "colorMode", "c0", "c1", "inkColor", "serpentine", "invert"]) {
   $(id).addEventListener("input", scheduleRender);
   $(id).addEventListener("change", scheduleRender);
 }
@@ -703,6 +712,7 @@ renderDotBgPalette();
 $("colorMode").addEventListener("change", () => {
   const m = $("colorMode").value;
   $("monoColors").style.display = m === "mono" ? "" : "none";
+  $("inkColors").style.display = m === "ink" ? "" : "none";
   $("paletteEditor").style.display = m === "palette" ? "" : "none";
 });
 
@@ -811,11 +821,13 @@ function buildPixelSVG({ imgData, ww, hh, px }) {
     let x = 0;
     while (x < ww) {
       const i = (y * ww + x) * 4;
+      // Transparent pixels (single-ink mode) produce no geometry
+      if (data[i + 3] === 0) { x++; continue; }
       const r = data[i], g = data[i + 1], b = data[i + 2];
       let x2 = x + 1;
       while (x2 < ww) {
         const j = (y * ww + x2) * 4;
-        if (data[j] !== r || data[j + 1] !== g || data[j + 2] !== b) break;
+        if (data[j] !== r || data[j + 1] !== g || data[j + 2] !== b || data[j + 3] === 0) break;
         x2++;
       }
       const hex = rgbHex(r, g, b);
@@ -1001,6 +1013,16 @@ function makeQuantizer(mode, levels, c0, c1, palette) {
     return (r, g, bl, bias) => {
       const y = 0.299 * r + 0.587 * g + 0.114 * bl + (bias || 0);
       return y < 128 ? a : b;
+    };
+  }
+  if (mode === "ink") {
+    // Single ink on transparent: dark → ink (opaque), light → transparent.
+    // Transparent pixels count as white for error-diffusion purposes.
+    const ink = [...hexToRgb($("inkColor").value), 255];
+    const clear = [255, 255, 255, 0];
+    return (r, g, bl, bias) => {
+      const y = 0.299 * r + 0.587 * g + 0.114 * bl + (bias || 0);
+      return y < 128 ? ink : clear;
     };
   }
   if (mode === "gray") {
@@ -1279,8 +1301,10 @@ function ditherErrorDiffusion(imgData, kernel, quantize, mode, strength, serpent
     for (let x = xStart; x !== xEnd; x += xStep) {
       const i = (y * w + x) * 4;
       const or = buf[i], og = buf[i + 1], ob = buf[i + 2];
-      const [qr, qg, qb] = quantize(or, og, ob, 0);
+      const q = quantize(or, og, ob, 0);
+      const [qr, qg, qb] = q;
       data[i] = clamp8(qr); data[i + 1] = clamp8(qg); data[i + 2] = clamp8(qb);
+      if (q.length > 3) data[i + 3] = q[3];
       const er = (or - qr) * strength;
       const eg = (og - qg) * strength;
       const eb = (ob - qb) * strength;
@@ -1309,11 +1333,12 @@ function ditherOrdered(imgData, matrix, quantize, mode, threshold) {
       const i = (y * w + x) * 4;
       const m = matrix[y % rows][x % cols];
       let bias;
-      if (mode === "mono") {
+      if (mode === "mono" || mode === "ink") {
         // Bias pushes luminance past the chosen threshold
         bias = m * 255 + (128 - threshold);
-        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
-        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+        const q = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = q[0]; data[i + 1] = q[1]; data[i + 2] = q[2];
+        if (q.length > 3) data[i + 3] = q[3];
       } else {
         // Add bias proportional to step size for levels modes
         const b = m * 255;
@@ -1330,10 +1355,11 @@ function ditherRandom(imgData, quantize, mode, threshold) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
       const noise = (Math.random() - 0.5) * 255;
-      if (mode === "mono") {
+      if (mode === "mono" || mode === "ink") {
         const bias = noise + (128 - threshold);
-        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
-        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+        const q = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = q[0]; data[i + 1] = q[1]; data[i + 2] = q[2];
+        if (q.length > 3) data[i + 3] = q[3];
       } else {
         const [qr, qg, qb] = quantize(data[i] + noise, data[i + 1] + noise, data[i + 2] + noise, 0);
         data[i] = qr; data[i + 1] = qg; data[i + 2] = qb;
@@ -1347,10 +1373,11 @@ function ditherThreshold(imgData, quantize, mode, threshold) {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      if (mode === "mono") {
+      if (mode === "mono" || mode === "ink") {
         const bias = 128 - threshold;
-        const [r, g, b] = quantize(data[i], data[i + 1], data[i + 2], bias);
-        data[i] = r; data[i + 1] = g; data[i + 2] = b;
+        const q = quantize(data[i], data[i + 1], data[i + 2], bias);
+        data[i] = q[0]; data[i + 1] = q[1]; data[i + 2] = q[2];
+        if (q.length > 3) data[i + 3] = q[3];
       } else {
         const [qr, qg, qb] = quantize(data[i], data[i + 1], data[i + 2], 0);
         data[i] = qr; data[i + 1] = qg; data[i + 2] = qb;
