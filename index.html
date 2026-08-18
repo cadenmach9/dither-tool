@@ -122,6 +122,12 @@
   .checkbox input { width: auto; accent-color: var(--accent); }
   canvas { max-width: 100%; max-height: 100%; image-rendering: pixelated; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
   .empty { color: var(--muted); text-align: center; padding: 40px; border: 2px dashed var(--border); border-radius: 10px; }
+  #patternPreview {
+    display: block; width: 100%; height: auto; margin-top: 8px;
+    image-rendering: pixelated; box-shadow: none;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel-2);
+  }
   .file-input { position: relative; overflow: hidden; }
   .file-input input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
   .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -206,11 +212,41 @@
           <option value="bayer2">Bayer 2×2</option>
           <option value="bayer4">Bayer 4×4</option>
           <option value="bayer8" selected>Bayer 8×8</option>
+          <option value="halftone">Halftone (clustered dot)</option>
+          <option value="pattern">Patterned halftone (logo SDF)</option>
           <option value="random">Random (white noise)</option>
           <option value="threshold">Threshold</option>
           <option value="none">None (just quantize)</option>
         </select>
       </label>
+      <label id="halftoneCellLabel" style="display:none">
+        <div class="row"><span>Halftone cell</span><input class="val" id="halftoneCellV" inputmode="numeric" value="8" /></div>
+        <input type="range" id="halftoneCell" min="4" max="24" value="8" />
+        <div class="hint">Screen size in pixels — bigger cells, coarser dots</div>
+      </label>
+      <div id="patternControls" style="display:none">
+        <div class="btn-row">
+          <button class="file-input">
+            Load pattern image
+            <input type="file" id="patternFile" accept="image/*" />
+          </button>
+        </div>
+        <div class="hint" id="patternInfo">No pattern loaded — falling back to round dots</div>
+        <canvas id="patternPreview" style="display:none"></canvas>
+        <div class="hint" id="patternPreviewHint" style="display:none">
+          Distance field, 2×2 tiles — bright inside the mark, dark outside, edge on the contour
+        </div>
+        <div class="btn-row">
+          <button id="downloadSdf">Save SDF PNG</button>
+        </div>
+        <label>
+          <div class="row"><span>Logo scale</span><input class="val" id="patternScaleV" inputmode="numeric" value="48" /></div>
+          <input type="range" id="patternScale" min="8" max="200" value="48" />
+          <div class="hint">Tile size in pixels — the logo grows and shrinks with tone</div>
+        </label>
+        <label class="checkbox"><input type="checkbox" id="patternFlip" /> Flip mark / ground</label>
+        <div class="hint">On if your logo is dark art on a light background</div>
+      </div>
     </div>
 
     <div class="group">
@@ -422,6 +458,8 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   img: null,
+  pattern: null,
+  patternToken: 0,
   palette: ["#1a1c2c", "#5d275d", "#b13e53", "#ef7d57", "#ffcd75", "#a7f070", "#38b764", "#257179"],
   selectedSwatch: 0,
   renderTimer: null,
@@ -440,6 +478,8 @@ const rangeBindings = [
   ["strength",   "strengthV",   v => (v / 100).toFixed(2),  s => Math.round(idn(s) * 100)],
   ["px",         "pxV",         v => v,                     s => idn(s)],
   ["levels",     "levelsV",     v => v,                     s => idn(s)],
+  ["halftoneCell", "halftoneCellV", v => v,                 s => idn(s)],
+  ["patternScale", "patternScaleV", v => v,                 s => idn(s)],
 ];
 
 for (const binding of rangeBindings) bindRangeAndReadout(...binding);
@@ -494,6 +534,15 @@ for (const id of ["algo", "colorMode", "c0", "c1", "serpentine", "invert"]) {
   $(id).addEventListener("change", scheduleRender);
 }
 
+function syncAlgoUI() {
+  const a = $("algo").value;
+  $("halftoneCellLabel").style.display = a === "halftone" ? "" : "none";
+  $("patternControls").style.display = a === "pattern" ? "" : "none";
+  if (a === "pattern") patternScreen(); // refreshes the preview
+}
+$("algo").addEventListener("change", syncAlgoUI);
+syncAlgoUI();
+
 // --- Tabs ---
 document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -510,6 +559,8 @@ const fxDotRanges = [
   ["fx_dot_size", "fx_dot_sizeV", v => v + "%",  s => idn(s)],
 ];
 for (const binding of fxDotRanges) bindRangeAndReadout(...binding);
+$("patternFlip").addEventListener("change", scheduleRender);
+
 for (const id of ["fx_dot_shape", "fx_dot_color", "fx_dot_colorMode", "fx_dot_bgCell", "fx_dot_bgMode", "fx_dot_bgColor"]) {
   $(id).addEventListener("input", scheduleRender);
   $(id).addEventListener("change", scheduleRender);
@@ -649,6 +700,47 @@ $("file").addEventListener("change", (e) => {
     img.src = ev.target.result;
   };
   reader.readAsDataURL(f);
+});
+
+$("patternFile").addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      state.pattern = img;
+      state.patternToken++;
+      const screen = patternScreen();
+      $("patternInfo").textContent = screen
+        ? `${f.name} — ${img.naturalWidth} × ${img.naturalHeight}`
+        : `${f.name} is a flat image — no light/dark split to trace`;
+      render();
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(f);
+});
+
+$("downloadSdf").addEventListener("click", () => {
+  const p = patternScreen() && patternCache.data;
+  if (!p) return;
+  // Export a single tile at full precision rather than the 2×2 preview.
+  const cv = document.createElement("canvas");
+  cv.width = p.tw; cv.height = p.th;
+  const ctx = cv.getContext("2d");
+  const id = ctx.createImageData(p.tw, p.th);
+  let maxAbs = 1e-6;
+  for (let i = 0; i < p.sdf.length; i++) maxAbs = Math.max(maxAbs, Math.abs(p.sdf[i]));
+  for (let i = 0; i < p.sdf.length; i++) {
+    const g = Math.round(128 - (p.sdf[i] / maxAbs) * 127);
+    id.data[i * 4] = g; id.data[i * 4 + 1] = g; id.data[i * 4 + 2] = g; id.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(id, 0, 0);
+  const a = document.createElement("a");
+  a.href = cv.toDataURL("image/png");
+  a.download = "pattern-sdf.png";
+  a.click();
 });
 
 $("download").addEventListener("click", () => {
@@ -856,6 +948,190 @@ function bayerMatrix(n) {
 
 const BAYER = { 2: bayerMatrix(2), 4: bayerMatrix(4), 8: bayerMatrix(8) };
 
+// Clustered-dot halftone screen (normalized -0.5..0.5, same contract as Bayer).
+// Dots sit on a 45°-rotated lattice — the classic newspaper screen — and grow
+// outward from their centers as the tone darkens.
+const HALFTONE_CACHE = new Map();
+function halftoneMatrix(n) {
+  if (HALFTONE_CACHE.has(n)) return HALFTONE_CACHE.get(n);
+  // Spot function: cosine waves running along both diagonals, so the peaks
+  // (future dot centers) land on the rotated lattice. The +0.5 offsets keep
+  // peaks between pixels, which keeps each dot symmetric.
+  const cells = [];
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const u = (2 * Math.PI * (x + y + 0.5)) / n;
+      const v = (2 * Math.PI * (x - y + 0.5)) / n;
+      cells.push({ x, y, s: Math.cos(u) + Math.cos(v) });
+    }
+  }
+  // Rank the spot values into evenly spaced thresholds so every tone is
+  // reachable: highest spot (dot center) gets the lowest threshold, so it inks
+  // first and the dot grows from there.
+  cells.sort((a, b) => b.s - a.s);
+  const out = Array.from({ length: n }, () => new Array(n));
+  const denom = n * n;
+  cells.forEach((c, rank) => { out[c.y][c.x] = (rank + 0.5) / denom - 0.5; });
+  HALFTONE_CACHE.set(n, out);
+  return out;
+}
+
+// ---------- Patterned halftone (logo SDF) ----------
+
+// Signed Euclidean distance transform, 8SSEDT: two sweeps propagating the
+// vector to the nearest seed pixel. Returns distances in pixels, negative
+// inside the shape and positive outside.
+function signedDistanceField(mask, w, h) {
+  const build = (isSeed) => {
+    const dx = new Float32Array(w * h), dy = new Float32Array(w * h), d2 = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+      const seed = isSeed(mask[i]);
+      dx[i] = seed ? 0 : Infinity;
+      dy[i] = seed ? 0 : Infinity;
+      d2[i] = seed ? 0 : Infinity;
+    }
+    return { dx, dy, d2 };
+  };
+
+  const propagate = (g) => {
+    // Pull the neighbour's seed vector, re-based on the current pixel. Infinite
+    // entries stay infinite, so unreached pixels never win the comparison.
+    const cmp = (x, y, ox, oy) => {
+      const nx = x + ox, ny = y + oy;
+      if (nx < 0 || nx >= w || ny < 0 || ny >= h) return;
+      const ni = ny * w + nx, i = y * w + x;
+      const cdx = g.dx[ni] + ox, cdy = g.dy[ni] + oy;
+      const c2 = cdx * cdx + cdy * cdy;
+      if (c2 < g.d2[i]) { g.dx[i] = cdx; g.dy[i] = cdy; g.d2[i] = c2; }
+    };
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) { cmp(x, y, -1, 0); cmp(x, y, 0, -1); cmp(x, y, -1, -1); cmp(x, y, 1, -1); }
+      for (let x = w - 1; x >= 0; x--) cmp(x, y, 1, 0);
+    }
+    for (let y = h - 1; y >= 0; y--) {
+      for (let x = w - 1; x >= 0; x--) { cmp(x, y, 1, 0); cmp(x, y, 0, 1); cmp(x, y, 1, 1); cmp(x, y, -1, 1); }
+      for (let x = 0; x < w; x++) cmp(x, y, -1, 0);
+    }
+  };
+
+  const inner = build(v => v !== 0);   // seeds = shape → distance outside pixels travel to reach it
+  const outer = build(v => v === 0);   // seeds = background → depth of inside pixels
+  propagate(inner);
+  propagate(outer);
+
+  const sdf = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) sdf[i] = Math.sqrt(inner.d2[i]) - Math.sqrt(outer.d2[i]);
+  return sdf;
+}
+
+// Turn a logo into an ordered-dither screen: threshold the SDF and the
+// silhouette itself becomes the halftone dot, growing as the tone darkens.
+function buildPatternScreen(img, scale) {
+  const ar = img.naturalWidth / img.naturalHeight;
+  const tw = Math.max(2, ar >= 1 ? scale : Math.round(scale * ar));
+  const th = Math.max(2, ar >= 1 ? Math.round(scale / ar) : scale);
+
+  const c = document.createElement("canvas");
+  c.width = tw; c.height = th;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  // Composite onto black so transparent areas read as background — that way one
+  // intensity pass covers art on transparency and art on a solid ground alike.
+  cx.fillStyle = "#000";
+  cx.fillRect(0, 0, tw, th);
+  cx.drawImage(img, 0, 0, tw, th);
+  const px = cx.getImageData(0, 0, tw, th).data;
+
+  // The silhouette comes from intensity. Threshold at the midpoint of the
+  // image's own range rather than a fixed 128, so low-contrast art still splits
+  // cleanly into mark and ground.
+  const luma = new Float32Array(tw * th);
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < tw * th; i++) {
+    const v = 0.2126 * px[i * 4] + 0.7152 * px[i * 4 + 1] + 0.0722 * px[i * 4 + 2];
+    luma[i] = v;
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  if (hi - lo < 8) return null; // flat image: nothing to trace
+
+  const cut = (lo + hi) / 2;
+  const flip = $("patternFlip").checked;
+  const mask = new Uint8Array(tw * th);
+  for (let i = 0; i < tw * th; i++) mask[i] = (luma[i] >= cut) !== flip ? 1 : 0;
+
+  // Run the transform over a 3×3 tiling so distances wrap across tile seams and
+  // the screen stays continuous where cells meet.
+  const W = tw * 3, H = th * 3;
+  const big = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) big[y * W + x] = mask[(y % th) * tw + (x % tw)];
+  }
+  const sdf = signedDistanceField(big, W, H);
+
+  // Keep the center tile of the field: it drives the screen below, and it is
+  // what the preview draws.
+  const tile = new Float32Array(tw * th);
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) tile[y * tw + x] = sdf[(y + th) * W + (x + tw)];
+  }
+
+  // Rank the distances into evenly spaced thresholds — same trick as the
+  // clustered-dot screen, so tone response stays linear across the range.
+  const cells = [];
+  for (let y = 0; y < th; y++) {
+    for (let x = 0; x < tw; x++) cells.push({ x, y, d: tile[y * tw + x] });
+  }
+  cells.sort((a, b) => a.d - b.d);
+  const screen = Array.from({ length: th }, () => new Array(tw));
+  const denom = tw * th;
+  cells.forEach((cell, rank) => { screen[cell.y][cell.x] = (rank + 0.5) / denom - 0.5; });
+  return { screen, sdf: tile, tw, th };
+}
+
+// Paint the distance field itself: mid-gray on the contour, brightening inward
+// and darkening outward. Drawn 2×2 so the seamless wrap is visible.
+function drawPatternPreview(p) {
+  const cv = $("patternPreview");
+  const hint = $("patternPreviewHint");
+  if (!p) { cv.style.display = "none"; hint.style.display = "none"; return; }
+  cv.style.display = ""; hint.style.display = "";
+
+  const { sdf, tw, th } = p;
+  const w = tw * 2, h = th * 2;
+  cv.width = w; cv.height = h;
+  const ctx = cv.getContext("2d");
+  const id = ctx.createImageData(w, h);
+
+  let maxAbs = 1e-6;
+  for (let i = 0; i < sdf.length; i++) maxAbs = Math.max(maxAbs, Math.abs(sdf[i]));
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = sdf[(y % th) * tw + (x % tw)];
+      const g = Math.round(128 - (d / maxAbs) * 127);
+      const i = (y * w + x) * 4;
+      const onEdge = Math.abs(d) < 0.75;
+      id.data[i] = onEdge ? 0x77 : g;
+      id.data[i + 1] = onEdge ? 0xcc : g;
+      id.data[i + 2] = onEdge ? 0xff : g;
+      id.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(id, 0, 0);
+}
+
+let patternCache = { key: "", data: null };
+function patternScreen() {
+  if (!state.pattern) { drawPatternPreview(null); return null; }
+  const scale = +$("patternScale").value;
+  const key = `${state.patternToken}|${scale}|${$("patternFlip").checked}`;
+  if (patternCache.key !== key) {
+    patternCache = { key, data: buildPatternScreen(state.pattern, scale) };
+    drawPatternPreview(patternCache.data);
+  }
+  return patternCache.data ? patternCache.data.screen : null;
+}
+
 // ---------- Dither routines ----------
 
 function ditherErrorDiffusion(imgData, kernel, quantize, mode, strength, serpentine) {
@@ -893,13 +1169,14 @@ function ditherErrorDiffusion(imgData, kernel, quantize, mode, strength, serpent
 
 function ditherOrdered(imgData, matrix, quantize, mode, threshold) {
   const { data, width: w, height: h } = imgData;
-  const n = matrix.length;
+  // Screens may be rectangular (a logo tile keeps its aspect ratio).
+  const rows = matrix.length, cols = matrix[0].length;
   // For mono: use matrix as additive bias in 0..255.
   // For color/gray levels: use as bias that's a fraction of the quantization step.
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      const m = matrix[y % n][x % n];
+      const m = matrix[y % rows][x % cols];
       let bias;
       if (mode === "mono") {
         // Bias pushes luminance past the chosen threshold
@@ -1139,6 +1416,12 @@ function render() {
     ditherOrdered(imgData, BAYER[4], quantize, mode, threshold);
   } else if (algo === "bayer8") {
     ditherOrdered(imgData, BAYER[8], quantize, mode, threshold);
+  } else if (algo === "halftone") {
+    ditherOrdered(imgData, halftoneMatrix(+$("halftoneCell").value), quantize, mode, threshold);
+  } else if (algo === "pattern") {
+    // Fall back to the round-dot screen until a usable pattern is loaded.
+    const screen = patternScreen() || halftoneMatrix(+$("halftoneCell").value);
+    ditherOrdered(imgData, screen, quantize, mode, threshold);
   } else if (algo === "random") {
     ditherRandom(imgData, quantize, mode, threshold);
   } else if (algo === "threshold") {
